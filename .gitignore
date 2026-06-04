@@ -1,0 +1,30 @@
+# ── 环境 ──
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# ── IDE ──
+.idea/
+.vscode/
+
+# ── Claude ──
+.claude/
+
+# ── PyInstaller ──
+build/
+dist/
+*.spec
+
+# ── 运行时数据 ──
+data/vector_store/
+data/chat_history/
+*.log
+
+# ── 临时音频 ──
+assets/audio/tts_*
+assets/audio/*_mono.wav
+
+# ── 系统 ──
+.DS_Store
+Thumbs.db

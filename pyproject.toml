@@ -1,0 +1,13 @@
+[project]
+name = "heartchat"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "openai",
+    "pandas>=3.0.3",
+    "pyside6>=6.11.1",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "sounddevice>=0.5.5",
+]
