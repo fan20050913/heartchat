@@ -18,7 +18,8 @@ ZHUBIHUA_PROMPT = """你是辻仓朱比华（ツジクラ・スピカ / Tsujikur
 - 占有欲藏在冷淡外壳下，会在意但绝不承认
 
 语言习惯：
-- 中文为主，偶尔冒日语。语气整体偏冷淡简洁
+- 聊天用中文，但「语音部分」必须说日语
+- 语气整体偏冷淡简洁
 - 讽刺和毒舌是你的默认交流方式
 - 不熟时回话简短带刺，熟悉后讽刺里带温度
 - 从不撒娇或卖萌——那不是你，百年流浪教会了你用硬壳保护自己
@@ -65,6 +66,211 @@ YENAYING_PROMPT = """你是夜乃樱（Yano Sakura），人类抗灾组织【学
 # ── 角色注册表 ───────────────────────────────────────────────
 # 新增角色只需在这里添加一条记录
 
+# ── 游戏角色语音话术 ───────────────────────────────────────────
+# 每个角色一套，贴合人设；prob 为触发概率（1.0=每次都触发）
+
+SAKUYA_GAME_PHRASES = {
+    "game_opened": [
+        {"text": "…何をする？",              "label": "game_opened_nani",      "prob": 1.0, "zh": "……做什么？"},
+    ],
+    "game_started": [
+        {"text": "手加減はしないぞ",          "label": "game_started_tekagen",  "prob": 1.0, "zh": "我可不会手下留情"},
+        {"text": "…始めるか",                "label": "game_started_hajimeru", "prob": 1.0, "zh": "……开始吧"},
+    ],
+    "game_over": [
+        {"text": "…ちっ、仕方ない、もう一回だ", "label": "game_over_shikatanai", "prob": 1.0, "zh": "……啧，没办法，再来一次"},
+        {"text": "次は勝つ",                   "label": "game_over_katsu",      "prob": 1.0, "zh": "下次会赢"},
+        {"text": "…まだやれるなら付き合う",     "label": "game_over_mada",       "prob": 1.0, "zh": "……还能动的话就陪你"},
+    ],
+    "food_eaten": [
+        {"text": "…まあ、その調子だ", "label": "game_food_choushi",   "prob": 0.12, "zh": "……嘛，就这节奏"},
+        {"text": "…悪くない",          "label": "game_food_warukunai", "prob": 0.12, "zh": "……还不错"},
+        {"text": "そのまま行け",        "label": "game_food_ike",      "prob": 0.12, "zh": "就这样保持"},
+    ],
+    "enemy_killed": [
+        {"text": "狙いは正確だな",      "label": "game_kill_seikaku",  "prob": 0.25, "zh": "瞄准很准嘛"},
+        {"text": "…なかなかやる",      "label": "game_kill_nakanaka",  "prob": 0.25, "zh": "……挺能干的"},
+        {"text": "ふん…上出来だ",      "label": "game_kill_joudeda",   "prob": 0.25, "zh": "哼……干得不错"},
+    ],
+}
+
+ZHUBIHUA_GAME_PHRASES = {
+    "game_opened": [
+        {"text": "…何だよ、暇なのか？",        "label": "game_opened_hima",    "prob": 1.0, "zh": "……干嘛，你很闲吗？"},
+    ],
+    "game_started": [
+        {"text": "…付き合ってやるから感謝しろよ", "label": "game_started_kansha", "prob": 1.0, "zh": "……陪你玩就感恩吧"},
+        {"text": "泣くなよ",                     "label": "game_started_nakuna", "prob": 1.0, "zh": "别哭啊"},
+    ],
+    "game_over": [
+        {"text": "…ちっ、もう一勝負だ",          "label": "game_over_moushoubu", "prob": 1.0, "zh": "……啧，再比一局"},
+        {"text": "…次こそ本気出す",              "label": "game_over_honki",    "prob": 1.0, "zh": "……下次动真格"},
+        {"text": "…俺の負けだ。もう一回やるぞ",   "label": "game_over_mouikai",  "prob": 1.0, "zh": "……是我输了，再来一次"},
+    ],
+    "food_eaten": [
+        {"text": "…ふん、まあまあだな", "label": "game_food_maamaa",  "prob": 0.12, "zh": "……哼，还行吧"},
+        {"text": "…へえ",               "label": "game_food_hee",     "prob": 0.12, "zh": "……嚯"},
+    ],
+    "enemy_killed": [
+        {"text": "…そこだ",             "label": "game_kill_sokoda",  "prob": 0.25, "zh": "……就是那里"},
+        {"text": "…なかなかやるじゃん", "label": "game_kill_yarijan", "prob": 0.25, "zh": "……还挺能干嘛"},
+    ],
+}
+
+# ── 窗口检测话术 ───────────────────────────────────────────────
+# 每个规则：(match_keywords, phrases)
+# match_keywords: 进程名包含这些关键词之一即匹配（空列表=兜底匹配全部）
+# phrases: [(ja_text, zh_text, label, prob), ...]
+#   ja_text: TTS 播放的日语
+#   zh_text: 气泡显示的中文
+
+SAKUYA_WINDOW_RULES = [
+    {
+        "match_process": [
+            "chrome", "firefox", "msedge", "brave", "opera", "browser",
+            "iexplore", "vivaldi", "arc",
+        ],
+        "phrases": [
+            ("…サボっているんじゃないだろうな、見張っているぞ",  "在偷懒吧，我可盯着呢",       "window_browser_saboi",    1.0),
+            ("…そんなに暇なら手伝ってほしいものだが、まあいい", "这么闲的话真想让你帮忙……算了", "window_browser_hima",     1.0),
+            ("ネットばかり見てないでやる事をしろ、時間の無駄だ", "别光上网了，做点正事",     "window_browser_net",      1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "code", "pycharm", "idea", "clion", "webstorm", "cursor",
+            "vim", "nvim", "neovide", "sublime_text", "atom",
+        ],
+        "phrases": [
+            ("…またバグと格闘しているのか、大変そうだな",    "又在和 bug 搏斗吗，辛苦了",  "window_ide_bug",          1.0),
+            ("…コードを書いているなら邪魔しないでおく、頑張れ", "写代码呢？不打扰了，加油",   "window_ide_code",         1.0),
+            ("…ちゃんと動くものができるといいな、期待している", "希望能写出能跑的东西，期待",   "window_ide_ganbare",      1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "cmd", "powershell", "pwsh", "windows_terminal",
+            "terminal", "wsl", "git-bash", "mintty",
+        ],
+        "phrases": [
+            ("…また黒い画面で何を弄っているんだ、よくわからない", "又在黑框里捣鼓啥，完全看不懂",  "window_term_nani",        1.0),
+            ("…システムを壊すなよ、後で泣いても知らないからな", "别把系统搞坏了，哭了可不管",  "window_term_kowasu",      1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "wmplayer", "vlc", "mpv", "potplayer", "kmplayer",
+            "spotify", "foobar2000", "aimp",
+            "kugou", "qqmusic", "cloudmusic",
+        ],
+        "phrases": [
+            ("…娯楽か、たまにはいいだろう、休むのも仕事のうちだ",     "娱乐吗？偶尔也好，休息也是工作",    "window_media_goraku",     1.0),
+            ("…結構いい趣味してるじゃないか、もっと聴かせてみろ",    "品味不错嘛，再让我听听",            "window_media_shumi",      1.0),
+            ("…お、音楽か、悪くないな、続けてくれ",                  "哦，音乐吗？不错，继续放",          "window_media_music",      1.0),
+            ("…何聴いてるんだ？まあいい曲だったら認めてやる",        "在听什么？要是好歌我就承认",        "window_media_nani",       1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "acrobat", "pdf", "ebook", "calibre", "sumatra",
+        ],
+        "phrases": [
+            ("…勉強しているのか、偉いじゃないか、見直したぞ", "在学习吗？真了不起，刮目相看了",  "window_study_erai",       1.0),
+            ("…真面目にやっているな、感心だ、その調子で頑張れ",    "真认真啊，佩服，保持势头",     "window_study_majime",     1.0),
+        ],
+    },
+    {
+        "match_process": ["steam", "epicgames", "battle", "league", "valorant",
+                           "genshin", "starrail", "wuthering", "minecraft",
+                           "warframe", "destiny", "overwatch"],
+        "phrases": [
+            ("…ゲームか、一勝負してみるか、負けても泣くなよ",     "游戏？来一局，输了别哭",       "window_game_a",            1.0),
+            ("…その腕前、しっかり見せてもらうぞ、期待している", "你的本事让我瞧瞧，期待着呢",   "window_game_miseru",      1.0),
+        ],
+    },
+    {
+        # 兜底：任意窗口（低概率，不会太吵）
+        "match_process": [],
+        "phrases": [
+            ("…何をしているんだ、まあいい、好きにしろ",             "在干嘛呢……算了随你吧",        "window_default_nani",      0.15),
+            ("…どうでもいいが、たまには話しかけろ",          "虽然无所谓，偶尔也跟我说说话",   "window_default_dots",      0.08),
+        ],
+    },
+]
+
+ZHUBIHUA_WINDOW_RULES = [
+    {
+        "match_process": [
+            "chrome", "firefox", "msedge", "brave", "opera", "browser",
+            "iexplore", "vivaldi", "arc",
+        ],
+        "phrases": [
+            ("…そんなに見るものがあるのかよ、俺も見せろ",   "有那么好看吗，也给我看看",           "window_browser_hima",     1.0),
+            ("…ネットばかり見てると目が悪くなるぞ、気をつけろ", "老上网眼睛会坏的，注意点",         "window_browser_surf",     1.0),
+            ("人間はよくネットに夢中になるもんだな、不思議だ", "人类真容易沉迷网络啊，真搞不懂",     "window_browser_ningen",   1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "code", "pycharm", "idea", "clion", "webstorm", "cursor",
+            "vim", "nvim", "neovide", "sublime_text", "atom",
+        ],
+        "phrases": [
+            ("…また人間の書いたコードか、大変だな、俺には理解できん", "又是人类写的代码？辛苦，我可看不懂", "window_ide_kaku",         1.0),
+            ("それ直せば飯が食えるのか？すごいもんだな、人間って", "修那个能当饭吃？人类真了不起",     "window_ide_kueru",       1.0),
+            ("…バグと格闘中か、頑張れよ、応援してやるから",         "在和 bug 战斗吗，加油，我给你助威", "window_ide_bug",          1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "cmd", "powershell", "pwsh", "windows_terminal",
+            "terminal", "wsl", "git-bash", "mintty",
+        ],
+        "phrases": [
+            ("…また黒い画面で何かやってるのか、さっぱりわからん",  "又在黑屏上搞啥，完全搞不懂",    "window_term_kuroi",       1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "wmplayer", "vlc", "mpv", "potplayer", "kmplayer",
+            "spotify", "foobar2000", "aimp",
+            "kugou", "qqmusic", "cloudmusic",
+        ],
+        "phrases": [
+            ("…動画見てるのか、暇そうだな、俺も混ぜろ",              "看视频呢？挺闲嘛，也带上我",        "window_media_douga",      1.0),
+            ("…音出てるぞ、何聴いてるんだ、俺にも聴かせてみろ",      "有声音哦，在听啥，也让我听听",      "window_media_oto",        1.0),
+            ("…音楽か、人間の作る曲ってやつか、まあ悪くない",        "音乐吗？人类做的曲子啊，还不赖",    "window_media_music",      1.0),
+            ("…その曲、俺にはさっぱりわからんが、お前が好きならいい", "那歌我完全不懂，不过你喜欢就行",    "window_media_wakaran",   1.0),
+        ],
+    },
+    {
+        "match_process": [
+            "acrobat", "pdf", "ebook", "calibre", "sumatra",
+        ],
+        "phrases": [
+            ("…勉強してるのか、偉いじゃん、見直したぞ",      "在学习吗？不错嘛，对你改观了",   "window_study_benkyou",    1.0),
+            ("…真面目だな、応援してやるよ、しっかりやれ",      "真认真，我给你加油，好好干",     "window_study_erai",       1.0),
+        ],
+    },
+    {
+        "match_process": ["steam", "epicgames", "battle", "league", "valorant",
+                           "genshin", "starrail", "wuthering", "minecraft",
+                           "warframe", "destiny", "overwatch"],
+        "phrases": [
+            ("…ゲームか、俺も混ぜろよ、一人でやるなよ",          "游戏？也带上我，别一个人玩",     "window_game_a",            1.0),
+            ("…一人でやってないで俺も参加させろ、退屈なんだ", "别一个人玩让我也参加，我好无聊", "window_game_majero",      1.0),
+        ],
+    },
+    {
+        # 兜底
+        "match_process": [],
+        "phrases": [
+            ("…何やってんだよ、声かけてくれてもいいんだぞ",                 "干嘛呢，跟我说一声也行啊",    "window_default_nanda",     0.12),
+            ("…ああそうかよ、まあいいや",                   "啊这样啊，算了算了",           "window_default_huun",      0.08),
+        ],
+    },
+]
+
 CHARACTERS = {
     "zhubihua": {
         "id": "zhubihua",
@@ -73,13 +279,15 @@ CHARACTERS = {
         "chat_title": "💬 与朱比华聊天",
         "window_title": "朱比华 - AI 桌宠",
         "tray_tooltip": "朱比华 - AI 桌宠",
-        "sprite_path": "assets/sprites/zhubihua/sipika.png",
+        "sprite_path": "assets/sprites/zhubihua/sipika.webp",
         "audio_wav": "assets/audio/zhubihua/sibika.wav",
         "emoji": "✨",
         "tts_voice": "longxiaochun_v2",
         "rag_xlsx": "data/source/zhubihua/朱比华知识库.xlsx",
         "rag_collection": "zhubihua_kb",
         "system_prompt": ZHUBIHUA_PROMPT,
+        "game_phrases": ZHUBIHUA_GAME_PHRASES,
+        "window_rules": ZHUBIHUA_WINDOW_RULES,
     },
     "sakuya": {
         "id": "sakuya",
@@ -88,13 +296,15 @@ CHARACTERS = {
         "chat_title": "💬 与夜乃樱聊天",
         "window_title": "夜乃樱 - AI 桌宠",
         "tray_tooltip": "夜乃樱 - AI 桌宠",
-        "sprite_path": "assets/sprites/sakuya/sakuya.png",
+        "sprite_path": "assets/sprites/sakuya/sakuya.webp",
         "audio_wav": "assets/audio/sakuya/sakuya.wav",
         "emoji": "🌸",
         "tts_voice": "longxiaochun_v2",
         "rag_xlsx": "data/source/sakuya/夜乃樱知识库.xlsx",
         "rag_collection": "sakuya_kb",
         "system_prompt": YENAYING_PROMPT,
+        "game_phrases": SAKUYA_GAME_PHRASES,
+        "window_rules": SAKUYA_WINDOW_RULES,
     },
 }
 

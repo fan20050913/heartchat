@@ -5,6 +5,7 @@ TTS 语音合成引擎
 
 import sys
 import re
+import hashlib
 import threading
 import time
 from pathlib import Path
@@ -62,6 +63,42 @@ class TTSEngine(QObject):
         self.stop()
         threading.Thread(target=self._request_tts, args=(text,), daemon=True).start()
 
+    def speak_from_file(self, filepath: str):
+        """直接播放本地音频文件（缓存复用用，不走 API）。"""
+        if not self._enabled:
+            return
+        self.stop()
+        self._play_on_main(filepath)
+
+    def speak_cached(self, text: str, cache_dir: Path, label: str = ""):
+        """语音合成 + 缓存复用。首次走 API 并缓存，之后直接本地播放。
+
+        label: 可读文件名标识，如 "game_started_tsukiau"，不传则用 md5。
+        """
+        if not self._enabled or not text:
+            return
+        text = self._clean_text(text)
+        if not text:
+            return
+
+        if label:
+            safe = re.sub(r'[<>:"/\\|?*]', '_', label).strip('_')[:60]
+            cache_file = cache_dir / f"{safe}.mp3"
+        else:
+            cache_key = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+            cache_file = cache_dir / f"{cache_key}.mp3"
+
+        if cache_file.exists():
+            print(f"[TTS] 缓存命中: {cache_file.name}")
+            self.speak_from_file(str(cache_file))
+            return
+
+        # 缓存未命中 → 走 API，结果存到缓存目录
+        self.stop()
+        threading.Thread(
+            target=self._request_tts, args=(text, cache_file), daemon=True
+        ).start()
+
     def is_enabled(self) -> bool:
         """TTS 是否可用（已配置 API Key）。"""
         return self._enabled
@@ -85,7 +122,7 @@ class TTSEngine(QObject):
 
     # ── TTS 请求（使用 dashscope SDK） ────────────────────
 
-    def _request_tts(self, text: str):
+    def _request_tts(self, text: str, output_path: Path | None = None):
         try:
             try:
                 print(f"[TTS] 开始合成: '{text[:30]}...' ({len(text)} 字)")
@@ -95,6 +132,10 @@ class TTSEngine(QObject):
             # 使用阿里云官方的 dashscope SDK
             import dashscope
             dashscope.api_key = settings.ALIYUN_API_KEY
+            if settings.TTS_WS_URL:
+                dashscope.base_websocket_api_url = settings.TTS_WS_URL
+            if settings.TTS_HTTP_URL:
+                dashscope.base_http_api_url = settings.TTS_HTTP_URL
 
             from dashscope.audio.tts_v2 import SpeechSynthesizer, AudioFormat
 
@@ -112,13 +153,15 @@ class TTSEngine(QObject):
                 self.error_occurred.emit("TTS 返回的音频数据为空")
                 return
 
-            # 保存临时文件
-            ts = int(time.time() * 1000)
-            temp_file = self._temp_dir / f"tts_{ts}.mp3"
-            temp_file.write_bytes(audio_bytes)
-            print(f"[TTS] saved: {temp_file}")
+            # 保存到指定路径（缓存）或临时文件
+            if output_path is None:
+                ts = int(time.time() * 1000)
+                output_path = self._temp_dir / f"tts_{ts}.mp3"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(audio_bytes)
+            print(f"[TTS] saved: {output_path}")
 
-            self._play_on_main(str(temp_file))
+            self._play_on_main(str(output_path))
 
         except ImportError:
             print("[TTS] dashscope SDK not installed", file=sys.stderr)
@@ -158,10 +201,12 @@ class TTSEngine(QObject):
 
     def _remove_current_file(self):
         if self._current_file and self._current_file.exists():
-            try:
-                self._current_file.unlink()
-            except PermissionError:
-                pass
+            # 只删临时合成文件（tts_*），不删缓存文件（game_voices）
+            if self._current_file.name.startswith("tts_"):
+                try:
+                    self._current_file.unlink()
+                except PermissionError:
+                    pass
         self._current_file = None
 
     def _cleanup_temp_files(self):

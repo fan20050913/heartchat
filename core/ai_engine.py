@@ -40,11 +40,35 @@ class AIEngine(QObject):
     """DeepSeek 对话引擎，在后台线程中运行。"""
 
     # ── 信号 ──────────────────────────────────────────────
-    text_chunk = Signal(str)          # 流式逐字片段
-    response_finished = Signal(str)   # 完整回复文本
+    text_chunk = Signal(str)          # 流式逐字片段（含标签原始文本）
+    response_finished = Signal(str)   # 中文显示文本（解析后）
+    tts_text_ready = Signal(str)      # 日语语音文本就绪
     error_occurred = Signal(str)      # 错误信息
 
     MAX_HISTORY = 20  # 保留最近 N 轮对话
+
+    @staticmethod
+    def parse_bilingual(raw: str) -> tuple[str, str]:
+        """解析双语输出，返回 (中文显示文本, 日语语音文本)。
+
+        格式： 【显示】<中文>【语音】<日本語>
+        解析失败时：整段当显示文本，语音留空（TTS 静默跳过）。
+        """
+        import re
+        m = re.search(r'【显示】([\s\S]*?)【语音】([\s\S]*?)$', raw)
+        if m:
+            cn = m.group(1).strip()
+            jp = m.group(2).strip()
+            # 语音文本消毒：扒掉括号动作描述和多余空白
+            jp = re.sub(r'[（(][^）)]*[）)]', '', jp)
+            jp = re.sub(r'\s+', ' ', jp).strip()
+            return cn, jp
+        # 只有 【显示】 没有 【语音】
+        m2 = re.search(r'【显示】([\s\S]*)', raw)
+        if m2:
+            return m2.group(1).strip(), ""
+        # 完全无格式 → 全当中文显示
+        return raw, ""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,30 +133,6 @@ class AIEngine(QObject):
         """（Phase 3）设置 RAG 注入的人设上下文。"""
         self._rag_context = context
 
-    def translate_to_japanese(self, chinese_text: str) -> str:
-        """将中文翻译为动漫风格日语（非流式，用于 TTS 前处理）。"""
-        if not chinese_text:
-            return chinese_text
-        try:
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": (
-                        "你是一个中日翻译助手。把中文翻译成日语口语，动漫风格，"
-                        "语气活泼自然。只返回翻译结果，不要解释，不要加引号。"
-                    )},
-                    {"role": "user", "content": chinese_text},
-                ],
-                temperature=0.3,
-                max_tokens=1024,
-            )
-            result = response.choices[0].message.content.strip()
-            print(f"[翻译] ✓ {chinese_text[:20]}... → {result[:20]}...")
-            return result
-        except Exception as e:
-            print(f"[翻译] 失败，降级使用原文: {e}", file=sys.stderr)
-            return chinese_text
-
     # ── 内部实现 ──────────────────────────────────────────
 
     def _build_messages(self, user_text: str) -> list[dict]:
@@ -140,6 +140,18 @@ class AIEngine(QObject):
         system = self._system_prompt
         if self._rag_context:
             system += f"\n\n以下是和本次回答相关的角色知识：\n{self._rag_context}"
+
+        system += (
+            "\n\n【输出格式】\n"
+            "每次回复请同时输出中文和日语，格式如下：\n"
+            "【显示】<中文回复，包含颜文字、emoji、动作描述如（微笑）等所有内容>\n"
+            "【语音】<日本語の返答、純粋なセリフのみ、動作説明・絵文字不要、音声合成用>\n"
+            "要求：\n"
+            "【显示】和【语音】意思一致，语气都符合角色人设\n"
+            "【语音】只保留对话台词，不要包含动作描写和 emoji/颜文字\n"
+            "【语音】只输出纯文本，不加引号或标注\n"
+            "不要漏掉【语音】部分"
+        )
 
         messages = [{"role": "system", "content": system}]
         messages.extend(self._history)
@@ -174,14 +186,19 @@ class AIEngine(QObject):
                     self.text_chunk.emit(content)
 
             if full_text:
-                # 更新对话历史
+                # 解析双语输出
+                cn_text, jp_text = self.parse_bilingual(full_text)
+
+                # 历史存原始双语文本（让模型持续看到格式示例）
                 self._history.append({"role": "user", "content": user_text})
                 self._history.append({"role": "assistant", "content": full_text})
                 # 控制历史长度
                 if len(self._history) > self.MAX_HISTORY * 2:
                     self._history = self._history[-self.MAX_HISTORY * 2:]
 
-                self.response_finished.emit(full_text)
+                self.response_finished.emit(cn_text)
+                if jp_text:
+                    self.tts_text_ready.emit(jp_text)
 
         except Exception as e:
             error_type = type(e).__name__

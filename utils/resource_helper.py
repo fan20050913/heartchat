@@ -33,7 +33,7 @@ def asset_path(*parts: str) -> Path:
     """拼接基础目录下的资产路径。
 
     Usage:
-        asset_path("assets", "sprites", "sipika.png")
-        # => /exe/dir/assets/sprites/sipika.png
+        asset_path("assets", "sprites", "sipika.webp")
+        # => /exe/dir/assets/sprites/sipika.webp
     """
     return base_dir().joinpath(*parts)

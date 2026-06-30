@@ -36,21 +36,25 @@ class Settings:
     ASR_MODEL: str = os.getenv("ASR_MODEL", "paraformer-realtime-v2")
 
     # ── TTS（Phase 2） ──
-    TTS_MODEL: str = os.getenv("TTS_MODEL", "cosyvoice-v2")
+    TTS_MODEL: str = os.getenv("TTS_MODEL", "cosyvoice-v3.5-flash")
     TTS_VOICE: str = os.getenv("TTS_VOICE", "longxiaochun_v2")
+
+    # CosyVoice 自定义端点（私有部署 / 专属实例）
+    TTS_WS_URL: str = os.getenv("TTS_WS_URL", "")
+    TTS_HTTP_URL: str = os.getenv("TTS_HTTP_URL", "")
 
     # ── 文本模型选择 ──
     LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-flash")
 
     MODEL_PRESETS = {
         "deepseek-flash": {
-            "display": "DeepSeek V4 Flash + CosyVoice V2",
+            "display": "DeepSeek V4 Flash + CosyVoice V3.5 Flash",
             "api_key_env": "DEEPSEEK_API_KEY",
             "base_url": "https://api.deepseek.com",
             "model": "deepseek-v4-flash",
         },
         "qwen3.5-flash": {
-            "display": "Qwen 3.5 Flash + CosyVoice V2",
+            "display": "Qwen 3.5 Flash + CosyVoice V3.5 Flash",
             "api_key_env": "ALIYUN_API_KEY",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "model": "qwen3.5-flash",

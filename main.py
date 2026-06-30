@@ -54,17 +54,19 @@ def main():
     from PySide6.QtWidgets import (
         QApplication, QMessageBox, QDialog, QVBoxLayout,
         QHBoxLayout, QLineEdit, QLabel, QPushButton, QFrame,
-        QComboBox, QScrollArea, QWidget,
+        QComboBox, QScrollArea, QWidget, QListWidget, QListWidgetItem,
     )
 
     from config.settings import settings
     from config.characters import get_character, get_character_list
     from utils.resource_helper import asset_path
     from ui.pet_window import PetWindow
+    from ui.games import GameWindow
     from core.ai_engine import AIEngine
     from core.tts_engine import TTSEngine
     from core.rag_engine import RAGEngine
     from core.audio_input import AudioInputEngine
+    from core.window_watcher import WindowWatcher
 
     # ── 校验配置 ─────────────────────────────────────────
     try:
@@ -99,6 +101,79 @@ def main():
     audio = AudioInputEngine()
     if not audio.is_available():
         print("[AudioInput] 未检测到麦克风，语音输入已禁用")
+
+    # ── 游戏窗口 ──────────────────────────────────────────
+    game_window = GameWindow()
+
+    # ── 当前角色游戏语音状态（在 _switch_character 中更新） ──
+    _current_game_phrases: dict = {}
+    _current_game_voice_cache: Path = asset_path("assets", "audio", "game_voices", "_unset")
+    _current_window_rules: list = []
+    _current_window_voice_cache: Path = asset_path("assets", "audio", "window_voices", "_unset")
+
+    # ── 已问候过的窗口（进程+PID，同实例切标签/换网页不重复播，关了重开触发） ──
+    _greeted_windows: set[tuple[str, int]] = set()
+
+    import random as _random
+
+    def _get_game_phrase(event_type: str) -> tuple[str, str, str]:
+        """从当前角色话术表返回 (text, label, zh_text) 或 ("", "", "")。"""
+        entries = _current_game_phrases.get(event_type)
+        if not entries:
+            return ("", "", "")
+        chosen = _random.choice(entries)
+        if _random.random() > chosen["prob"]:
+            return ("", "", "")
+        return (chosen["text"], chosen["label"], chosen.get("zh", ""))
+
+    def _on_game_event(event_type: str, data: dict):
+        """游戏事件 → 角色语音反馈（缓存复用）+ 中文气泡。"""
+        if not tts.is_enabled():
+            return
+        text, label, zh_text = _get_game_phrase(event_type)
+        if not text:
+            return
+        tts.speak_cached(text, _current_game_voice_cache, label=label)
+        if zh_text:
+            pet.character.show_bubble(zh_text)
+
+    game_window.game_event.connect(_on_game_event)
+
+    # ── Window Watcher 窗口检测 ───────────────────────────
+
+    def _match_window_rule(title: str, process: str, exe_path: str) -> tuple[str, str, str] | None:
+        """匹配前台窗口规则 → 返回 (ja_text, zh_text, label) 或 None。"""
+        for rule in _current_window_rules:
+            keywords = rule.get("match_process", [])
+            if keywords and not any(k in process.lower() for k in keywords):
+                continue
+            phrases = rule.get("phrases", [])
+            if not phrases:
+                continue
+            chosen = _random.choice(phrases)
+            ja, zh, label, prob = chosen  # 4-tuple: (日语, 中文, label, prob)
+            if _random.random() <= prob:
+                return (ja, zh, label)
+            break  # 匹配到但没有命中概率，不再往下匹配
+        return None
+
+    def _on_window_changed(title: str, process: str, exe_path: str, pid: int):
+        """前台窗口变化 → 角色日语吐槽（缓存复用，已问候的窗口不重复播）。"""
+        if not tts.is_enabled():
+            return
+        # 已问候过的 (进程+PID) 跳过，同一浏览器切标签不重复播
+        key = (process, pid)
+        if key in _greeted_windows:
+            return
+        print(f"[WindowWatcher] 检测到: proc={process!r} pid={pid} title={title[:40]!r}")
+        result = _match_window_rule(title, process, exe_path)
+        if not result:
+            return
+        ja_text, zh_text, label = result
+        _greeted_windows.add(key)
+        tts.speak_cached(ja_text, _current_window_voice_cache, label=label)
+        if zh_text:
+            pet.character.show_bubble(zh_text)
 
     # ── 角色系统 ─────────────────────────────────────────
 
@@ -155,101 +230,81 @@ def main():
         panel.set_character(profile["sender_name"], profile["chat_title"])
 
         # 8. 更新主窗口
-        pet.set_character(profile["window_title"], profile["tray_tooltip"])
+        pet.set_character(profile["window_title"], profile["tray_tooltip"], str(sprite_path))
 
         # 9. 清空聊天显示
         panel.clear_all()
+
+        # 10. 更新游戏语音缓存目录（按角色分目录）
+        nonlocal _current_game_voice_cache, _current_game_phrases, _current_window_rules, _current_window_voice_cache
+        _current_game_voice_cache = asset_path("assets", "audio", "game_voices", character_id)
+        _current_game_voice_cache.mkdir(parents=True, exist_ok=True)
+        _current_game_phrases = profile.get("game_phrases", {})
+        _current_window_rules = profile.get("window_rules", [])
+        _current_window_voice_cache = asset_path("assets", "audio", "window_voices", character_id)
+        _current_window_voice_cache.mkdir(parents=True, exist_ok=True)
+        print(f"[角色] 游戏语音目录: {_current_game_voice_cache}")
+        print(f"[角色] 窗口语音目录: {_current_window_voice_cache}")
 
         print(f"[角色] 已切换到: {profile['name']}")
 
     # ── 初始化当前角色 ────────────────────────────────────
     _switch_character(settings.CURRENT_CHARACTER)
 
-    # ── 信号串联 ─────────────────────────────────────────
+    # ── 等待显示的文字缓存（等 TTS 同步） ────────────────
+
+    _pending_display = ""
+    _display_shown = False
+
+    def _show_display_text(from_tts: bool = False):
+        """显示缓存文字，确保只触发一次。
+        from_tts=True → 由 play_started 触发（同步语音），idle 由 play_finished 负责。
+        from_tts=False → 无 TTS 或超时，直接设 idle。
+        """
+        nonlocal _display_shown
+        if _display_shown:
+            return
+        _display_shown = True
+        panel.finish_streaming(_pending_display)
+        if not from_tts:
+            _set_character_state("idle")
+
+    # ── 核心信号处理 ─────────────────────────────────────
 
     def on_send(text: str):
-        """用户发送消息 → RAG 检索 → 启动 AI 回复。"""
+        """用户发送消息 → 立即出加载动画 → RAG 检索 → 启动 AI 回复。"""
         panel.start_streaming()
+        panel.start_loading_animation()
         context = rag.query(text)
         if context:
             print(f"[RAG] 注入上下文: {len(context)} 字")
         ai.set_rag_context(context)
         ai.chat(text)
 
-    # 用于缓存 AI 回复，等待 TTS 就绪后一同显示
-    _pending_reply: list[str] = []
+    def on_finished(display_text: str):
+        """AI 回复完成 → 缓存文字，等 TTS 开始或超时后显示。"""
+        nonlocal _pending_display, _display_shown
+        _pending_display = display_text
+        _display_shown = False
 
-    def on_chunk(chunk: str):
-        """流式输出片段 → 暂不显示，缓存起来等 TTS 就绪。"""
-        _pending_reply.append(chunk)
+        if not tts.is_enabled() or not display_text:
+            _show_display_text()
+            return
 
-    def _calc_tts_delay(text_len: int) -> int:
-        """根据文本长度估算 TTS 生成耗时。"""
-        return min(10000, max(3500, int(3500 + text_len * 75)))
-
-    def on_finished(full_text: str):
-        """AI 回复完成 → 延时显示文字 + 后台 TTS。"""
-        full_reply = "".join(_pending_reply)
-        _pending_reply.clear()
-        delay = _calc_tts_delay(len(full_reply))
-        print(f"[main] on_finished, delay={delay}ms, reply_len={len(full_reply)}")
-
-        # 后台 TTS（不影响文字显示）
-        if tts.is_enabled():
-            threading.Thread(
-                target=_translate_and_speak,
-                args=(full_text,),
-                daemon=True,
-            ).start()
-
-        # 延时后显示文字
+        print(f"[main] 等 TTS 同步，{len(display_text)} 字，超时 8s")
         panel.start_loading_animation()
-        QTimer.singleShot(delay, lambda: (
-            print(f"[main] 定时器触发, 显示 {len(full_reply)} 字"),
-            panel.finish_streaming(full_reply)
-        ))
+        QTimer.singleShot(8000, _show_display_text)
 
-    def _strip_action_descriptions(text: str) -> str:
-        """去掉括号内的动作/场景描述，只保留对话台词。"""
-        import re
-        # 去掉 （...） 和 （...） 与前后文字的间隔，避免留空括号痕迹
-        result = re.sub(r'[（(][^）)]*[）)]', '', text)
-        # 去掉因此产生的多余空白和标点重复
-        result = re.sub(r'\s+', ' ', result).strip()
-        return result
-
-    def _translate_and_speak(chinese_text: str):
-        """翻译中文为动漫日语 → 调用 TTS 合成。"""
-        try:
-            # 先扒掉括号动作描述，只翻译台词
-            dialog_only = _strip_action_descriptions(chinese_text)
-            japanese_text = ai.translate_to_japanese(dialog_only)
-            tts.speak(japanese_text)
-        except Exception as e:
-            import traceback
-            try:
-                from utils.resource_helper import data_dir
-                log_dir = data_dir() / "data"
-                log_dir.mkdir(parents=True, exist_ok=True)
-                with open(log_dir / "crash.log", "a", encoding="utf-8") as f:
-                    f.write(f"\n=== translate_and_speak error at {__import__('datetime').datetime.now()} ===\n")
-                    traceback.print_exc(file=f)
-            except Exception:
-                pass
-            # 出错时依然显示文字（面板可能已关闭，但 finish_streaming 渲染不受影响）
-            if _pending_reply:
-                panel.finish_streaming("".join(_pending_reply))
-            _pending_reply.clear()
+    def on_tts_text(tts_text: str):
+        """日语语音文本就绪 → 直接 TTS（无需翻译）。"""
+        if tts.is_enabled() and tts_text:
+            print(f"[main] TTS 文本就绪: {tts_text[:30]}...")
+            tts.speak(tts_text)
 
     def on_tts_ready():
-        """TTS 开始播放 → 停动画 + 显示说话指示条（文字已由定时器负责）。"""
-        panel._stop_loading()
+        """TTS 开始播放 → 同步显示文字 + 说话指示条。"""
+        _show_display_text(from_tts=True)
         panel.show_tts_playing()
-
-    def on_tts_disabled(full_text: str):
-        """TTS 不可用时，AI 回复完成后直接显示文字。"""
-        panel.finish_streaming(full_text)
-        _pending_reply.clear()
 
     def on_error(error_msg: str):
         """AI 出错 → 显示错误。"""
@@ -267,15 +322,15 @@ def main():
     # 聊天 → AI
     panel.send_message.connect(on_send)
 
+    # 发消息 → 思考中
+    panel.send_message.connect(lambda _: _set_character_state("thinking"))
+
     # AI → 聊天界面 + 角色状态
-    ai.text_chunk.connect(on_chunk)
     ai.response_finished.connect(on_finished)
+    ai.tts_text_ready.connect(on_tts_text)
     ai.error_occurred.connect(on_error)
 
-    # 开始对话 → talking
-    panel.send_message.connect(lambda _: _set_character_state("talking"))
-    # AI 完成或出错 → idle
-    ai.response_finished.connect(lambda _: _set_character_state("idle"))
+    # AI 出错 → idle（成功时由 _show_display_text 或 TTS play_finished 负责）
     ai.error_occurred.connect(lambda _: _set_character_state("idle"))
 
     # TTS → 聊天界面 + 角色状态
@@ -283,10 +338,13 @@ def main():
     tts.play_started.connect(lambda: _set_character_state("talking"))
     tts.play_finished.connect(panel.hide_tts_playing)
     tts.play_finished.connect(lambda: _set_character_state("idle"))
+    tts.play_finished.connect(lambda: pet.character.hide_bubble())
     tts.error_occurred.connect(lambda msg: (
+        _show_display_text(),
         panel.show_error(msg),
         panel._stop_loading(),
         _set_character_state("idle"),
+        pet.character.hide_bubble(),
     ))
 
     # ── API Key 配置 + 声音克隆对话框 ─────────────────────
@@ -297,6 +355,7 @@ def main():
         voice_found = Signal(str)   # voice_id → 更新当前音色标签
         error = Signal(str)
         done = Signal()
+        show_picker = Signal(list)  # 通知主线程弹选择框
 
     def _set_tts_voice(voice_id: str):
         """更新运行时和 .env 的 TTS_VOICE（同时存角色专属 key）。"""
@@ -431,6 +490,106 @@ def main():
         voice_sig.voice_found.connect(lambda vid: current_label.setText(f"当前音色: {vid}"))
         voice_sig.error.connect(lambda msg: status_label.setText(f"❌ {msg}"))
 
+        def _show_voice_picker(matched: list):
+            """主线程：展示音色选择框，支持删除。"""
+            if not matched:
+                return
+            if len(matched) == 1:
+                vid = matched[0]["voice_id"]
+                model_ver = matched[0].get("target_model", "?")
+                voice_sig.voice_found.emit(vid)
+                status_label.setText(f"✅ 已切换至 {model_ver}")
+                _set_tts_voice(vid)
+                print(f"[声音克隆] 自动切换 {vid} (model={model_ver})")
+                return
+            # 多个 → 弹框选择/删除
+            picker = QDialog(pet)
+            picker.setWindowTitle("选择音色")
+            picker.resize(600, 350)
+            layout = QVBoxLayout(picker)
+
+            count_label = QLabel(f"找到 {len(matched)} 个匹配音色：")
+            layout.addWidget(count_label)
+
+            lw = QListWidget()
+            for v in matched:
+                vid = v.get("voice_id", "?")
+                model_ver = v.get("target_model", "?")
+                created = v.get("gmt_create", "")
+                lw.addItem(f"[{model_ver}]  {vid}  ({created})")
+            if matched:
+                lw.setCurrentRow(0)
+            layout.addWidget(lw)
+
+            br = QHBoxLayout()
+            cancel_btn = QPushButton("关闭")
+            use_btn = QPushButton("使用选中音色")
+            use_btn.setStyleSheet("background:#4a90d9; color:white; border:none; padding:6px 18px;")
+            delete_btn = QPushButton("删除选中")
+            delete_btn.setStyleSheet("background:#d94a4a; color:white; border:none; padding:6px 18px;")
+            br.addWidget(cancel_btn)
+            br.addWidget(delete_btn)
+            br.addWidget(use_btn)
+            layout.addLayout(br)
+
+            def _do_delete():
+                row = lw.currentRow()
+                if row < 0 or row >= len(matched):
+                    return
+                target = matched[row]
+                vid = target["voice_id"]
+                # 确认
+                confirm = QMessageBox(picker)
+                confirm.setWindowTitle("确认删除")
+                confirm.setText(f"确定删除音色？\n{vid}")
+                confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+                confirm.setDefaultButton(QMessageBox.No)
+                if confirm.exec() != QMessageBox.Yes:
+                    return
+                # 执行删除
+                try:
+                    import dashscope
+                    from dashscope.audio.tts_v2 import VoiceEnrollmentService
+                    dashscope.api_key = settings.ALIYUN_API_KEY
+                    if settings.TTS_WS_URL:
+                        dashscope.base_websocket_api_url = settings.TTS_WS_URL
+                    if settings.TTS_HTTP_URL:
+                        dashscope.base_http_api_url = settings.TTS_HTTP_URL
+                    service = VoiceEnrollmentService()
+                    service.delete_voice(vid)
+                    print(f"[声音克隆] 已删除: {vid}")
+                except Exception as e:
+                    QMessageBox.warning(picker, "删除失败", str(e))
+                    return
+                # 从列表移除
+                matched.pop(row)
+                lw.takeItem(row)
+                count_label.setText(f"找到 {len(matched)} 个匹配音色：")
+                if not matched:
+                    status_label.setText("所有音色已删除，可创建新音色")
+                    picker.accept()
+                elif row < len(matched):
+                    lw.setCurrentRow(row)
+                else:
+                    lw.setCurrentRow(len(matched) - 1)
+
+            cancel_btn.clicked.connect(picker.reject)
+            use_btn.clicked.connect(picker.accept)
+            delete_btn.clicked.connect(_do_delete)
+            lw.doubleClicked.connect(picker.accept)
+            if picker.exec() == QDialog.Accepted:
+                row = lw.currentRow()
+                if row >= 0 and row < len(matched):
+                    chosen = matched[row]
+                    vid = chosen["voice_id"]
+                    model_ver = chosen.get("target_model", "?")
+                    voice_sig.voice_found.emit(vid)
+                    status_label.setText(f"✅ 已切换至 {model_ver}")
+                    _set_tts_voice(vid)
+                    print(f"[声音克隆] 手动选择 {vid} (model={model_ver})")
+
+        voice_sig.show_picker.connect(_show_voice_picker)
+
         # ── 下拉框实时切换角色 + 自动检测音色 ──────────────
         def _on_character_selected(idx: int):
             char_list = get_character_list()
@@ -465,29 +624,28 @@ def main():
         # ── 检测已有音色 ─────────────────────────────────
 
         def _do_check_voice(sig: _VoiceTaskSignals):
-            """后台线程：查询音色列表，匹配当前角色的自定义音色。"""
+            """后台线程：查询音色列表，结果通过信号回主线程。"""
             import dashscope
             from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
             char_id = settings.CURRENT_CHARACTER
             sig.status.emit("⏳ 查询中...")
             dashscope.api_key = settings.ALIYUN_API_KEY
+            if settings.TTS_WS_URL:
+                dashscope.base_websocket_api_url = settings.TTS_WS_URL
+            if settings.TTS_HTTP_URL:
+                dashscope.base_http_api_url = settings.TTS_HTTP_URL
             try:
                 service = VoiceEnrollmentService()
                 voices = service.list_voices(page_index=0, page_size=50)
-                # 同时搜角色 ID 和旧前缀 sibika（兼容之前克隆的）
                 search_terms = [char_id]
                 if char_id == "zhubihua":
                     search_terms.append("sibika")
-                custom = [v for v in voices if any(
+                matched = [v for v in voices if any(
                     t in v.get("voice_id", "").lower() for t in search_terms
                 )]
-                if custom:
-                    vid = custom[0]["voice_id"]
-                    sig.voice_found.emit(vid)
-                    sig.status.emit("✅ 找到自定义音色")
-                    _set_tts_voice(vid)
-                    print(f"[声音克隆] {char_id} 已切换到: {vid}")
+                if matched:
+                    sig.show_picker.emit(matched)
                 else:
                     sig.status.emit("❌ 未找到自定义音色，点「创建」按钮新建")
             except Exception as e:
@@ -516,7 +674,7 @@ def main():
             return asset_path("assets", "audio", "zhubihua", "sibika.wav")
 
         def _do_create_voice(sig: _VoiceTaskSignals):
-            """后台线程：从当前角色的 wav 创建自定义音色。"""
+            """后台线程：从当前角色的 wav 创建自定义音色（cosyvoice-v3.5-flash）。"""
             import dashscope
             from dashscope.audio.tts_v2 import VoiceEnrollmentService
             from dashscope.audio.asr import Recognition
@@ -557,6 +715,10 @@ def main():
 
                 sig.status.emit("⏳ 转写音频内容...")
                 dashscope.api_key = settings.ALIYUN_API_KEY
+                if settings.TTS_WS_URL:
+                    dashscope.base_websocket_api_url = settings.TTS_WS_URL
+                if settings.TTS_HTTP_URL:
+                    dashscope.base_http_api_url = settings.TTS_HTTP_URL
                 recognition = Recognition(
                     model=settings.ASR_MODEL, callback=_NullCallback(),
                     format="wav", sample_rate=sr,
@@ -572,8 +734,11 @@ def main():
 
                 sig.status.emit("⏳ 上传并克隆音色（约30秒）...")
                 audio_b64 = base64.b64encode(mono_path.read_bytes()).decode("ascii")
+                api_base = (settings.TTS_HTTP_URL.rstrip("/")
+                            if settings.TTS_HTTP_URL
+                            else "https://dashscope.aliyuncs.com")
                 resp = requests.post(
-                    "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+                    f"{api_base}/api/v1/services/audio/tts/customization",
                     headers={
                         "Authorization": f"Bearer {settings.ALIYUN_API_KEY}",
                         "Content-Type": "application/json",
@@ -582,7 +747,7 @@ def main():
                         "model": "voice-enrollment",
                         "input": {
                             "action": "create_voice",
-                            "target_model": "cosyvoice-v2",
+                            "target_model": settings.TTS_MODEL,
                             "prefix": settings.CURRENT_CHARACTER,
                             "url": f"data:audio/wav;base64,{audio_b64}",
                             "language_hints": ["ja"],
@@ -596,10 +761,35 @@ def main():
                     raise RuntimeError(resp.json().get("message", resp.text))
 
                 voice_id = resp.json()["output"]["voice_id"]
+                sig.status.emit("⏳ 等待音色就绪（轮询中）...")
+                print(f"[声音克隆] 创建成功，轮询状态: {voice_id}")
+
+                # 轮询音色状态（cosyvoice-v3.5-flash 需要等部署完成）
+                service = VoiceEnrollmentService()
+                for attempt in range(30):
+                    import time
+                    time.sleep(10)
+                    try:
+                        info = service.query_voice(voice_id=voice_id)
+                        status = info.get("status", "")
+                        print(f"[声音克隆] 轮询 {attempt+1}/30: status={status}")
+                        if status == "OK":
+                            sig.status.emit("✅ 音色就绪！")
+                            break
+                        elif status == "UNDEPLOYED":
+                            raise RuntimeError(f"音色处理失败: {status}")
+                    except RuntimeError:
+                        raise
+                    except Exception as e:
+                        print(f"[声音克隆] 轮询异常: {e}")
+                        continue
+                else:
+                    print("[声音克隆] 轮询超时，继续使用已创建的 voice_id")
+
                 _set_tts_voice(voice_id)
                 sig.voice_found.emit(voice_id)
                 sig.status.emit("✅ 创建成功！")
-                print(f"[声音克隆] 创建成功: {voice_id}")
+                print(f"[声音克隆] 完成: {voice_id}")
 
                 # 清理临时文件
                 mono_path.unlink(missing_ok=True)
@@ -703,6 +893,38 @@ def main():
 
     # 设置按钮 → 配置对话框
     panel.settings_requested.connect(_show_settings)
+
+    # ── 游戏窗口 ─────────────────────────────────────────
+
+    def _toggle_game_window():
+        """切换游戏窗口的显示/隐藏（屏幕正中弹出）。"""
+        if game_window.isVisible():
+            game_window.hide()
+        else:
+            screen = app.primaryScreen()
+            if screen:
+                center = screen.availableGeometry().center()
+                gw = game_window.frameGeometry()
+                gw.moveCenter(center)
+                game_window.move(gw.topLeft())
+            game_window.show_launcher()
+            game_window.show()
+            game_window.activateWindow()
+            # 打开游戏窗口时随一句语音（缓存复用）
+            if tts.is_enabled():
+                text, label, zh_text = _get_game_phrase("game_opened")
+                if text:
+                    tts.speak_cached(text, _current_game_voice_cache, label=label)
+                    if zh_text:
+                        pet.character.show_bubble(zh_text)
+
+    panel.game_requested.connect(_toggle_game_window)
+
+    # ── Window Watcher ──────────────────────────────────────
+    window_watcher = WindowWatcher(poll_interval=2000)
+    window_watcher.window_changed.connect(_on_window_changed)
+    window_watcher.start()
+    print("[WindowWatcher] 前台窗口检测已启动（2s 间隔）")
 
     # ── 音频输入信号串联 (Phase 4) ─────────────────────────
 

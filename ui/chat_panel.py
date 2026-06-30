@@ -19,6 +19,7 @@ class ChatPanel(QWidget):
     panel_closed = Signal()          # 面板关闭
     mic_toggled = Signal()           # 用户点击录音按钮
     settings_requested = Signal()    # 用户点击设置按钮
+    game_requested = Signal()        # 用户点击游戏按钮
 
     PANEL_WIDTH = 300
     PANEL_HEIGHT = 400
@@ -50,6 +51,12 @@ class ChatPanel(QWidget):
         self._recording_pulse = False
         self._recording_timer = QTimer(self)
         self._recording_timer.timeout.connect(self._on_recording_tick)
+
+        # typewriter 伪流式
+        self._typewriter_timer = QTimer(self)
+        self._typewriter_timer.timeout.connect(self._on_typewriter_tick)
+        self._typewriter_text = ""
+        self._typewriter_pos = 0
 
     # ── 窗口初始化 ────────────────────────────────────────
 
@@ -86,7 +93,7 @@ class ChatPanel(QWidget):
         self._build_input_area(layout)
 
     def _build_title(self, parent_layout: QVBoxLayout):
-        """标题栏：标题 + 关闭按钮。"""
+        """标题栏：标题 + 右上角按钮（⚙ ✕ 🎮）。"""
         title_bar = QHBoxLayout()
         title_bar.setContentsMargins(6, 0, 0, 0)
 
@@ -134,6 +141,32 @@ class ChatPanel(QWidget):
         title_bar.addWidget(close_btn)
 
         parent_layout.addLayout(title_bar)
+
+        # ── 游戏按钮行（右对齐，位于 ✕ 下方） ─────────────
+        game_row = QHBoxLayout()
+        game_row.setContentsMargins(0, 0, 6, 2)
+        game_row.addStretch()
+
+        self._game_btn = QPushButton("🎮")
+        self._game_btn.setFixedSize(24, 24)
+        self._game_btn.setToolTip("小游戏")
+        self._game_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(180, 200, 220, 40);
+                color: #7a9ab8;
+                border: none;
+                border-radius: 12px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: rgba(79, 195, 247, 100);
+                color: white;
+            }
+        """)
+        self._game_btn.clicked.connect(self._on_game)
+        game_row.addWidget(self._game_btn)
+
+        parent_layout.addLayout(game_row)
 
     def _build_tts_indicator(self, parent_layout: QVBoxLayout):
         """TTS 播放状态指示条。"""
@@ -249,9 +282,14 @@ class ChatPanel(QWidget):
         """用户点击设置按钮。"""
         self.settings_requested.emit()
 
+    def _on_game(self):
+        """用户点击游戏按钮。"""
+        self.game_requested.emit()
+
     def _on_close(self):
         """关闭面板：停加载动画，后台继续跑。"""
         self._stop_loading()
+        self._typewriter_timer.stop()
         self.hide()
         self.panel_closed.emit()
 
@@ -292,13 +330,24 @@ class ChatPanel(QWidget):
         self._render_all()
 
     def finish_streaming(self, full_text: str):
-        """流式完成，固定最后一条消息。"""
+        """流式完成，typewriter 逐字显示。"""
         self._stop_loading()
         self._streaming = False
-        if self._messages:
-            self._messages[-1] = (self._character_name, full_text, False)
         self._stream_buffer = ""
+
+        if not full_text:
+            if self._messages:
+                self._messages[-1] = (self._character_name, "", False)
+            self._render_all()
+            return
+
+        # typewriter 逐字显示（70ms/字，约 14 字/秒）
+        self._typewriter_text = full_text
+        self._typewriter_pos = 0
+        if self._messages:
+            self._messages[-1] = (self._character_name, "", False)
         self._render_all()
+        self._typewriter_timer.start(70)
 
     # ── 录音按钮 ────────────────────────────────────────────
 
@@ -384,6 +433,22 @@ class ChatPanel(QWidget):
         self._loading_active = False
         self._loading_timer.stop()
 
+    # ── typewriter 伪流式 ─────────────────────────────────
+
+    def _on_typewriter_tick(self):
+        """定时器触发：逐字显示。"""
+        self._typewriter_pos += 1
+        shown = self._typewriter_text[:self._typewriter_pos]
+        if self._messages:
+            self._messages[-1] = (self._character_name, shown, False)
+        self._render_all()
+        if self._typewriter_pos >= len(self._typewriter_text):
+            self._typewriter_timer.stop()
+            # 最终确保显示完整文本
+            if self._messages:
+                self._messages[-1] = (self._character_name, self._typewriter_text, False)
+            self._render_all()
+
     # ── 角色切换 ──────────────────────────────────────────
 
     def set_character(self, name: str, chat_title: str):
@@ -398,6 +463,7 @@ class ChatPanel(QWidget):
         self._messages.clear()
         self._stream_buffer = ""
         self._streaming = False
+        self._typewriter_timer.stop()
         self.browser.clear()
 
     def _render_all(self):
